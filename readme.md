@@ -12,7 +12,7 @@ Problem statement/App description:
 A LLM powered application that inspects the video answer for an interrogation question and detects whether the person answering is lying or not.
 ---
 - There would be an input text box as question. 
-- Plus there would be a video input as question. 
+- Plus there would be a video input as question. (0-30 seconds video - since app is just mvp)
 ### UI 
 app.py contains streamlit ui. It's connected to backend engine. 
 ### Backend engine: 
