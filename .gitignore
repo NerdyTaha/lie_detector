@@ -1,0 +1,5 @@
+# env and venv 
+.venv
+.env 
+# caches 
+__pychache__/
