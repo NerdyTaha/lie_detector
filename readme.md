@@ -7,6 +7,10 @@
 - Execute the command for running the app:   streamlit run app/app.py 
 
 ## Engineering of the app
+---
+Problem statement/App description: 
+A LLM powered application that inspects the video answer for an interrogation question and detects whether the person answering is lying or not.
+---
 - There would be an input text box as question. 
 - Plus there would be a video input as question. 
 ### UI 
