@@ -23,6 +23,8 @@ from moviepy import VideoFileClip
 import openai  # official Python client (older/newer variants compatible with client.audio.transcriptions.create pattern)
 import logging
 import re
+import whisper
+
 
 load_dotenv()
 
@@ -166,62 +168,35 @@ def extract_audio_from_video(video_input: t.Union[str, t.IO], out_audio_ext: str
             except Exception:
                 pass
 
-def transcribe_with_openai_whisper(audio_path: str, model: str = "whisper-1", language: t.Optional[str] = None) -> str:
+def transcribe_with_openai_whisper(audio_path: str, model_size: str = "base") -> str:
     """
-    Transcribe audio using OpenAI's Audio Transcriptions endpoint (Whisper).
-    Returns transcribed text.
-
-    Notes/References:
-    - Official speech-to-text guide and API reference: https://platform.openai.com/docs/guides/speech-to-text and the Transcriptions API reference.
-      (See docs for the 'transcriptions' endpoint and request parameters.)
-    - Whisper and the API may produce transcription errors; treat transcripts as noisy.
+    Transcribe audio using a local Whisper model (no API).
+    
+    Parameters:
+        audio_path: path to extracted audio file
+        model_size: one of ["tiny", "base", "small", "medium", "large"]
+    
+    Returns:
+        Transcribed text string.
     """
-    api_key = os.getenv("OPENAI_API_KEY")
-    if not api_key:
-        raise RuntimeError("OPENAI_API_KEY not set in environment.")
+    try:
+        logger.info("Loading local Whisper model: %s", model_size)
+        model = whisper.load_model(model_size)
 
-    # Using the classic openai package pattern. Newer clients may use `OpenAI()` object; adapt if necessary.
-    openai.api_key = api_key
+        logger.info("Transcribing audio: %s", audio_path)
+        result = model.transcribe(audio_path)
 
-    # Call the transcriptions endpoint via a file upload
-    with open(audio_path, "rb") as af:
-        # The exact method names can vary by openai-python version. The below is compatible with
-        # recent usage: openai.Audio.transcriptions.create or openai.Audio.transcribe.
-        # If your installed client exposes openai.Audio.transcribe, you can switch to that.
-        try:
-            # Preferred approach: call the transcriptions create endpoint
-            # This pattern works with many openai client versions:
-            resp = openai.Audio.transcriptions.create(
-                model=model,
-                file=af,
-                # response_format could be 'text' or 'verbose_json' depending on needs
-            )
-            # resp might be an object with .text or a dict; normalize:
-            if isinstance(resp, dict):
-                # Common shape: {"text": "..."}
-                text = resp.get("text") or resp.get("transcription") or ""
-            else:
-                # Some clients return object with .text
-                text = getattr(resp, "text", "") or getattr(resp, "transcription", "")
-        except AttributeError:
-            # Older/newer clients might support direct function:
-            # fallback to openai.Audio.transcribe(model, file=af)
-            resp = openai.Audio.transcribe(model=model, file=af)
-            text = getattr(resp, "text", "") if resp else ""
-        except Exception as e:
-            # Some environments use the 'client' style. Try a generic POST using requests as fallback.
-            logger.warning("openai client transcription failed, attempting HTTP fallback: %s", e)
-            # as a last resort, re-raise so calling code can handle it
-            raise
+        text = result.get("text", "").strip()
 
-    if not text:
-        logger.warning("No transcription text received from OpenAI; raw response: %s", resp)
-        # Try to extract text field heuristically
-        try:
-            text = json.dumps(resp)
-        except Exception:
-            text = ""
-    return text.strip()
+        if not text:
+            logger.warning("Whisper returned empty transcription.")
+
+        return text
+
+    except Exception as e:
+        logger.exception("Local Whisper transcription failed: %s", e)
+        raise
+
 
 def _call_llm_and_get_json(question: str, transcript: str, openai_model: str = "gpt-4o-mini") -> dict:
     """
