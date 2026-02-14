@@ -1,3 +1,30 @@
 # LLM powered lie detector 
 
 - Leverages Gemini to detect lies. 
+
+## Engineering of the app
+- There would be an input text box as question. 
+- Plus there would be a video input as question. 
+### UI 
+app.py contains streamlit ui. It's connected to backend engine. 
+### Backend engine: 
+Correctness module 
+    - This will take a video, extract audio from it, then convert it to text using OpenAI whisper.
+    - The text will be sent to LLM and LLM will be tasked to identify relevance, correctness, etc, and give a signal as negative or positive (with context of input provided)
+    - Positive if a possible lie detected. Negative if text does is likely not a lie.
+    - Also, a reason for the signal. 
+Audio_analyse module 
+    - This will take the audio and extract audio from it. 
+    - The audio (with context of its extraction) will be sent to an LLM for processing. 
+    - The LLM will be asked to look for patterns that are common in "lying" like stuttering and many filler words or pausing too much.
+    - The LLM will then output a signal and reason for that signal. 
+    positive signal if "lie" detected and negative signal if speech is truthful.
+Visual_analyse module 
+    - This will take a video, extract images from it (frames of video)
+    - Then the images will be clubbed to make a collage - and it will be passed to LLM. 
+    - The LLM will look at the images and will be prompted to identify patterns of lying.
+    - It will give a signal (positive if lie detected & negative if lie not detected) and a reason for that signal. 
+
+Final_decide module 
+    - Read signals and reason of the first 3 modules. 
+    - aggregate them and provide a final decision of lie or not along with a reason.
