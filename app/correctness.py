@@ -24,7 +24,7 @@ import openai  # official Python client (older/newer variants compatible with cl
 import logging
 import re
 import whisper
-
+import google.generativeai as genai
 
 load_dotenv()
 

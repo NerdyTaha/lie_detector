@@ -2,3 +2,4 @@ streamlit
 fastapi
 openai-whisper 
 openai
+google-generativeai
