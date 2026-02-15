@@ -3,3 +3,4 @@ fastapi
 openai-whisper 
 openai
 google-generativeai
+opencv-python

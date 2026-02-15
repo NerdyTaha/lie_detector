@@ -16,6 +16,7 @@ A LLM powered application that inspects the video answer for an interrogation qu
 ### UI 
 app.py contains streamlit ui. It's connected to backend engine. 
 ### Backend engine: 
+##### These backend modules can be tested stand-alone as well.
 ##### Correctness module 
     - This will take a video, extract audio from it, then convert it to text using OpenAI whisper.
     - The text will be sent to LLM and LLM will be tasked to identify relevance, correctness, etc, and give a signal as negative or positive (with context of input provided)
@@ -33,6 +34,6 @@ app.py contains streamlit ui. It's connected to backend engine.
     - The LLM will look at the images and will be prompted to identify patterns of lying.
     - It will give a signal (positive if lie detected & negative if lie not detected) and a reason for that signal. 
 
-##### Final_decide module 
+##### Final_decide module -> this would be done in app.py itslef.
     - Read signals and reason of the first 3 modules. 
     - aggregate them and provide a final decision of lie or not along with a reason.
