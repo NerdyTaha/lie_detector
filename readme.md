@@ -2,9 +2,10 @@
 - Leverages Gemini to detect lies. 
 
 # how to run the app? 
-- set up python venv with libraries: streamlit, fastapi, pydantic
+- set up python venv with libraries: streamlit, fastapi, pydantic (and other as per req.txt)
 - set up an .env file in your repo with api keys (make sure the var names are same as the ones in code)
 - Execute the command for running the app:   streamlit run app/app.py 
+- Also you need to have ffmpeg installed on your system
 
 ## Engineering of the app
 ---

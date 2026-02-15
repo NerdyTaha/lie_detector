@@ -2,4 +2,6 @@
 .venv
 .env 
 # caches 
-__pychache__/
+#app/__pycache__
+#app/__pycache__/
+__pycache__/
