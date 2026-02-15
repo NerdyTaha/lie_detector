@@ -2,12 +2,7 @@
 visual_analyse.py
 
 Creates a visual summary (collage) of a short video by sampling frames at even intervals,
-arranging them into a single image, and (optionally) sending that image to an LLM.
-
-THREE BLANKS YOU MUST FILL:
-- VISUAL_ANALYSIS_PROMPT: the prompt string for the LLM
-- VisualAnalysisResult: a pydantic model describing the LLM response
-- call_llm_with_image(image_path: str, prompt: str) -> dict: the function that calls your LLM/image API
+arranging them into a single image, and sending that image to an LLM for behavioral analysis.
 
 Usage:
 - As module:
@@ -17,34 +12,39 @@ Usage:
     python visual_analyse.py /path/to/video.mp4 "Optional question text"
 
 Requirements:
-pip install opencv-python numpy pydantic
-ffmpeg is NOT required for this module (cv2.VideoCapture used). If that fails on some containers,
-you can switch to moviepy-based extraction.
+pip install opencv-python numpy pydantic google-generativeai pillow
+ffmpeg is NOT required for this module (cv2.VideoCapture used).
 """
 
 import os
 import tempfile
 import math
+import json
 import typing as t
 import logging
 import numpy as np
 import cv2
-from pydantic import BaseModel, Field
+from PIL import Image
+from pydantic import BaseModel, Field, ValidationError
 from enum import Enum
+from dotenv import load_dotenv
+import google.generativeai as genai
+
+load_dotenv()
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 
-
-
-# 1) Prompt 
+# ---------------------------------------------------------
+# 1) System Prompt
+# ---------------------------------------------------------
 VISUAL_ANALYSIS_PROMPT = """You are an expert in behavioral analysis and visual deception detection. You will analyze a collage of video frames showing a person answering a question to identify visual indicators of deception.
 
 IMPORTANT CONTEXT:
-- You are viewing a COLLAGE of frames sampled evenly across the video timeline
-- Frames are arranged in a grid from left-to-right, top-to-bottom (chronological order)
-- Look for patterns and CHANGES across frames, not just isolated moments
-- The person knows they are being recorded (baseline nervousness is expected)
+- You are viewing a COLLAGE of frames sampled evenly across the video timeline.
+- Frames are arranged in a grid from left-to-right, top-to-bottom (chronological order).
+- Look for patterns and CHANGES across frames, not just isolated moments.
+- The person knows they are being recorded (baseline nervousness is expected).
 
 YOUR TASK:
 Analyze the visual and behavioral indicators across the frames to determine likelihood of deception.
@@ -54,64 +54,38 @@ ANALYZE FOR THESE VISUAL DECEPTION INDICATORS:
 1. EYE BEHAVIOR & GAZE PATTERNS:
    - Avoiding direct eye contact (looking away, down, or sideways)
    - Excessive blinking or rapid eye movements
-   - Looking up-right (often associated with fabrication) vs. up-left (recall)
-   - Staring too intensely (overcompensating to appear truthful)
-   - Eye direction changes when discussing specific details
-   - IMPORTANT: Brief look-aways for thought are NORMAL; sustained avoidance is suspicious
+   - Looking up-right (fabrication) vs. up-left (recall)
+   - Staring too intensely (overcompensating)
+   - IMPORTANT: Brief look-aways for thought are NORMAL; sustained avoidance is suspicious.
 
 2. FACIAL EXPRESSIONS & MICROEXPRESSIONS:
-   - Asymmetric facial expressions (one side different from other)
-   - Microexpressions that contradict stated emotion (flash of fear, contempt, etc.)
-   - Forced or fake smiles (mouth smiles but eyes don't - no crow's feet)
-   - Expressions not matching the content (smiling when serious, serious when casual)
-   - Timing: delayed emotional reactions or emotions that fade too quickly
+   - Asymmetric facial expressions
+   - Microexpressions that contradict stated emotion (fear, contempt, etc.)
+   - Forced or fake smiles (mouth smiles but eyes don't)
+   - Expressions not matching the content (smiling when serious)
    - Tension in jaw, lips pressed together, or mouth covering
 
-3. SELF-TOUCH & ADAPTORS (Self-Soothing Behaviors):
+3. SELF-TOUCH & ADAPTORS (Self-Soothing):
    - Touching face, especially nose, mouth, or ears
    - Rubbing neck or scratching
-   - Hand-to-face gestures (hiding mouth, touching nose)
+   - Hand-to-face gestures (hiding mouth)
    - Playing with hair, jewelry, or clothing
-   - IMPORTANT: Distinguish between:
-     * Occasional adjustments = NORMAL
-     * Repetitive self-touch during key claims = STRESS INDICATOR
+   - IMPORTANT: Repetitive self-touch during key claims = STRESS INDICATOR.
 
 4. HAND & ARM MOVEMENTS:
    - Sudden stillness or "freezing" (inhibited gestures)
-   - Hands hidden (in pockets, behind back, under table)
-   - Defensive barriers (crossed arms, holding objects as shields)
-   - Grooming behaviors (fixing clothes, adjusting appearance)
-   - Unnatural hand positions or awkward gestures
-   - Lack of illustrators (hand gestures that accompany speech)
+   - Hands hidden (in pockets, behind back)
+   - Defensive barriers (crossed arms)
+   - Grooming behaviors
+   - Lack of illustrators (natural hand gestures)
 
 5. BODY POSTURE & POSITIONING:
    - Leaning away from camera (distancing)
-   - Closed posture (hunched shoulders, crossed limbs)
+   - Closed posture (hunched, crossed limbs)
    - Shifting or fidgeting in seat
-   - Creating physical barriers between self and camera
-   - Sudden posture changes when specific topics arise
-   - Rigid, frozen posture (over-controlling body)
+   - Rigid, frozen posture
 
-6. HEAD MOVEMENTS:
-   - Excessive nodding or head shaking
-   - Head movements that contradict verbal statements (nodding while saying "no")
-   - Tilting head down (submission/shame)
-   - Looking away during critical moments
-
-7. SIGNS OF PHYSIOLOGICAL STRESS:
-   - Visible sweating (forehead, upper lip)
-   - Flushed face or color changes
-   - Swallowing or throat clearing
-   - Visible tension (clenched jaw, tense shoulders)
-   - Rapid breathing (chest movement)
-
-8. TEMPORAL PATTERNS ACROSS FRAMES:
-   - Look for CHANGES in behavior across the timeline
-   - Does body language shift when answering vs. when question was asked?
-   - Increased tension/movement in middle frames (fabricating) vs. start/end
-   - Relaxation after difficult question suggests relief (deception completed)
-
-9. CONGRUENCE & CONSISTENCY:
+6. CONGRUENCE & CONSISTENCY:
    - Do facial expressions align with expected emotions?
    - Does body language match the confidence of the answer?
    - Are there contradictions (saying "yes" while shaking head)?
@@ -122,8 +96,7 @@ CRITICAL DECISION FRAMEWORK:
   - Brief look-aways to think
   - Natural hand gestures accompanying speech
   - Slight nervousness throughout (camera anxiety)
-  - Occasional adjustments of posture or clothing
-  - Cultural differences in eye contact norms
+  - Occasional adjustments of posture
 
 ✗ SUSPICIOUS PATTERNS (Potentially Deceptive):
   - CLUSTERS of indicators appearing together
@@ -131,29 +104,20 @@ CRITICAL DECISION FRAMEWORK:
   - Behavior that contradicts verbal content
   - Self-soothing behaviors concentrated around key claims
   - Overcontrolled or frozen expressions
-  - Multiple indicators from different categories
-
-✓ LOOK FOR PATTERNS, NOT SINGLE INSTANCES:
-  - One hand-to-face touch ≠ deception
-  - Multiple self-touch gestures + gaze aversion + expression mismatch = SUSPICIOUS
-  - Changes from baseline (early frames) to later frames matter more than absolute behaviors
-
-COLLAGE ANALYSIS STRATEGY:
-1. Observe the first frame(s) as potential baseline behavior
-2. Track changes across the frame sequence (left-to-right, top-to-bottom)
-3. Note if suspicious behaviors cluster in specific frames (likely during key claims)
-4. Consider overall pattern: natural variation vs. stress markers
 
 DECISION CRITERIA:
-- POSITIVE (Lie Detected): Multiple clear indicators from different categories, significant behavioral changes during what appears to be critical moments, strong incongruence between expression and expected emotion
-- NEGATIVE (No Lie Detected): Natural body language variation, behaviors consistent with normal recording anxiety, genuine emotional expressions, absence of clustered stress indicators
+- POSITIVE (Lie Detected): Multiple clear indicators from different categories, significant behavioral changes, strong incongruence.
+- NEGATIVE (No Lie Detected): Natural body language variation, behaviors consistent with normal recording anxiety, genuine emotional expressions.
 
 ---
 QUESTION BEING ANSWERED: {question}
 
-Analyze the collage and provide your assessment in the required format."""
+Analyze the collage and provide your assessment in the required format.
+"""
 
-# 2) Pydantic model(s) 
+# ---------------------------------------------------------
+# 2) Pydantic Models
+# ---------------------------------------------------------
 class DeceptionSignal(str, Enum):
     LIE_DETECTED = "positive"
     NO_LIE_DETECTED = "negative"
@@ -171,25 +135,49 @@ class VisualAnalysisResult(BaseModel):
         description="Explanation for the visual-based detection decision"
     )
 
-# 3) LLM call: a stub 
+# ---------------------------------------------------------
+# 3) LLM Implementation
+# ---------------------------------------------------------
 def call_llm_with_image(image_path: str, prompt: str) -> dict:
     """
-    TODO: implement the call to your LLM/image+text endpoint here.
-
-    Should accept:
-      - image_path: path to the collage image
-      - prompt: the prompt/context you want to send (you can format VISUAL_ANALYSIS_PROMPT with question/metadata)
-
-    Expected return: a dict compatible with your VisualAnalysisResult when validated.
-
-    For now, raise NotImplementedError so users know this is pending.
+    Calls Gemini 2.5 Flash with the collage image and the analysis prompt.
     """
-    raise NotImplementedError("Implement call_llm_with_image(image_path, prompt) to call your LLM/API.")
+    api_key = os.getenv("GEMINI_API_KEY")
+    if not api_key:
+        raise RuntimeError("GEMINI_API_KEY not set in environment.")
 
+    genai.configure(api_key=api_key)
 
-# ----------------------------
-# Helpers: I/O & collage logic
-# ----------------------------
+    try:
+        # Load image using Pillow
+        img = Image.open(image_path)
+
+        # Configure model to return JSON matching the Pydantic schema
+        generation_config = {
+            "temperature": 0.0,
+            "response_mime_type": "application/json",
+            "response_schema": VisualAnalysisResult
+        }
+
+        model = genai.GenerativeModel(
+            model_name="gemini-2.5-flash",
+            generation_config=generation_config
+        )
+
+        logger.info("Sending collage and prompt to Gemini...")
+        
+        # Pass both the text prompt and the PIL image object
+        response = model.generate_content([prompt, img])
+        
+        return json.loads(response.text)
+
+    except Exception as e:
+        logger.exception("Gemini Visual Analysis failed: %s", e)
+        raise
+
+# ---------------------------------------------------------
+# 4) Helpers: Video Processing & Collage
+# ---------------------------------------------------------
 
 def _is_path_like(obj) -> bool:
     return isinstance(obj, str)
@@ -201,25 +189,9 @@ def _save_filelike_to_tempfile(filelike, suffix=""):
         f.write(filelike.read())
     return tmp_path
 
-def _ensure_video_path(video_input: t.Union[str, t.IO]) -> str:
-    """
-    Accept either a path or a file-like object (e.g. streamlit uploaded file).
-    Returns a filesystem path to the video.
-    Caller is responsible for removing returned temp file if necessary.
-    """
-    if _is_path_like(video_input):
-        return video_input
-    else:
-        name = getattr(video_input, "name", "")
-        suffix = ""
-        if name and "." in name:
-            suffix = "." + name.split(".")[-1]
-        return _save_filelike_to_tempfile(video_input, suffix=suffix)
-
 def extract_evenly_spaced_frames(video_path: str, num_frames: int = 8) -> t.List[np.ndarray]:
     """
-    Use cv2.VideoCapture to read the video and extract `num_frames` evenly spaced frames.
-    Returns list of BGR images (numpy arrays).
+    Extract `num_frames` evenly spaced frames from video using OpenCV.
     """
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
@@ -227,14 +199,9 @@ def extract_evenly_spaced_frames(video_path: str, num_frames: int = 8) -> t.List
         raise RuntimeError(f"Could not open video file: {video_path}")
 
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
-    fps = cap.get(cv2.CAP_PROP_FPS) or 0.0
-    duration = (total_frames / fps) if fps > 0 else 0
-
-    logger.info("Video opened: %s | frames=%s fps=%.2f duration=%.2fs",
-                video_path, total_frames, fps or 0.0, duration)
-
+    
+    # If video metadata is broken or empty, try to read a few frames manually
     if total_frames <= 0:
-        # Fallback: try reading frames sequentially until EOF and collect them (rare)
         frames = []
         while True:
             ret, frame = cap.read()
@@ -242,16 +209,16 @@ def extract_evenly_spaced_frames(video_path: str, num_frames: int = 8) -> t.List
                 break
             frames.append(frame)
         cap.release()
-        # sample from collected frames
+        
         if not frames:
             raise RuntimeError("No frames extracted from video.")
+            
+        # Sample evenly from the list we read
         indices = np.linspace(0, len(frames)-1, min(num_frames, len(frames))).astype(int)
-        sampled = [frames[i] for i in indices]
-        return sampled
+        return [frames[i] for i in indices]
 
-    # determine frame indices to sample
+    # Normal efficient seek-based extraction
     num_to_sample = min(num_frames, total_frames)
-    # evenly space across the whole video (including first and last)
     indices = np.linspace(0, total_frames - 1, num_to_sample).astype(int)
 
     sampled_frames = []
@@ -274,14 +241,12 @@ def extract_evenly_spaced_frames(video_path: str, num_frames: int = 8) -> t.List
 def make_collage(frames: t.List[np.ndarray], thumb_size: t.Tuple[int, int] = (320, 180), padding: int = 5) -> np.ndarray:
     """
     Build a grid collage from a list of frames.
-    - frames: list of BGR numpy arrays
-    - thumb_size: size (w, h) to resize each thumbnail to
-    Returns the collage as a BGR numpy array.
     """
     n = len(frames)
     if n == 0:
         raise ValueError("No frames to build a collage.")
 
+    # Calculate grid dimensions
     grid_cols = math.ceil(math.sqrt(n))
     grid_rows = math.ceil(n / grid_cols)
 
@@ -289,7 +254,8 @@ def make_collage(frames: t.List[np.ndarray], thumb_size: t.Tuple[int, int] = (32
     canvas_w = grid_cols * w + padding * (grid_cols + 1)
     canvas_h = grid_rows * h + padding * (grid_rows + 1)
 
-    canvas = np.ones((canvas_h, canvas_w, 3), dtype=np.uint8) * 255  # white background
+    # Create white canvas
+    canvas = np.ones((canvas_h, canvas_w, 3), dtype=np.uint8) * 255 
 
     idx = 0
     for r in range(grid_rows):
@@ -297,8 +263,9 @@ def make_collage(frames: t.List[np.ndarray], thumb_size: t.Tuple[int, int] = (32
             if idx >= n:
                 break
             frame = frames[idx]
-            # resize while maintaining aspect in case shape differs
+            # Resize frame to thumbnail size
             thumb = cv2.resize(frame, (w, h), interpolation=cv2.INTER_AREA)
+            
             x = padding + c * (w + padding)
             y = padding + r * (h + padding)
             canvas[y:y+h, x:x+w] = thumb
@@ -309,26 +276,22 @@ def make_collage(frames: t.List[np.ndarray], thumb_size: t.Tuple[int, int] = (32
 def save_image_bgr_to_tempfile(img_bgr: np.ndarray, suffix=".jpg", jpeg_quality: int = 85) -> str:
     fd, tmp_path = tempfile.mkstemp(suffix=suffix)
     os.close(fd)
-    # use cv2.imwrite with JPEG quality
     encode_params = [int(cv2.IMWRITE_JPEG_QUALITY), jpeg_quality]
     success = cv2.imwrite(tmp_path, img_bgr, encode_params)
     if not success:
         raise RuntimeError("Failed to write collage image to disk.")
     return tmp_path
 
-# ----------------------------
-# High-level API
-# ----------------------------
-
+# ---------------------------------------------------------
+# 5) Main Exported Function
+# ---------------------------------------------------------
 def build_visual_collage(video_input: t.Union[str, t.IO],
                          num_frames: int = 8,
                          thumb_size: t.Tuple[int, int] = (320, 180),
                          cleanup_video_temp: bool = True) -> str:
     """
     Creates and saves a collage image from video_input.
-    Returns the path to the saved collage image.
-
-    If `video_input` is a file-like object, a temporary file will be created and removed (if cleanup_video_temp True).
+    Returns path to the saved jpg.
     """
     temp_video_path = None
     created_temp_video = False
@@ -342,7 +305,7 @@ def build_visual_collage(video_input: t.Union[str, t.IO],
         frames = extract_evenly_spaced_frames(temp_video_path, num_frames=num_frames)
         collage_bgr = make_collage(frames, thumb_size=thumb_size)
         collage_path = save_image_bgr_to_tempfile(collage_bgr, suffix=".jpg")
-        logger.info("Collage saved to %s", collage_path)
+        
         return collage_path
     finally:
         if created_temp_video and cleanup_video_temp and temp_video_path and os.path.exists(temp_video_path):
@@ -357,41 +320,40 @@ def analyze_visual(video_input: t.Union[str, t.IO],
                    thumb_size: t.Tuple[int, int] = (320, 180),
                    cleanup_collage: bool = True) -> VisualAnalysisResult:
     """
-    High-level analyse function. Steps:
-    1) build collage image
-    2) format prompt (you can include the question and any metadata)
-    3) call LLM with the image and prompt (call_llm_with_image) -> returns dict
-    4) validate dict into VisualAnalysisResult (pydantic) and return
-
-    NOTE: call_llm_with_image is intentionally left as NotImplemented. Replace it with your API call.
+    Main entry point for visual analysis.
+    1. Extracts frames and builds a collage.
+    2. Sends collage + prompt to Gemini.
+    3. Returns structured VisualAnalysisResult.
     """
-    collage_path = build_visual_collage(video_input, num_frames=num_frames, thumb_size=thumb_size)
-    logger.info("Collage built at: %s", collage_path)
+    collage_path = None
+    try:
+        # 1. Build Collage
+        collage_path = build_visual_collage(video_input, num_frames=num_frames, thumb_size=thumb_size)
+        logger.info("Collage built at: %s", collage_path)
 
-    # Prepare prompt - you can format the placeholder prompt with question and metadata:
-    prompt = VISUAL_ANALYSIS_PROMPT
-    if question:
-        # Many prompts append question/context at the end:
-        prompt = (prompt + "\n\nQUESTION: {q}\n").format(q=question)
+        # 2. Format Prompt
+        # We use safe formatting in case question is None
+        q_text = question if question else "No specific question context provided."
+        final_prompt = VISUAL_ANALYSIS_PROMPT.format(question=q_text)
 
-    # Call LLM (stubbed)
-    llm_resp = call_llm_with_image(collage_path, prompt)  # <-- implement this
+        # 3. Call LLM
+        llm_resp = call_llm_with_image(collage_path, final_prompt)
+        
+        # 4. Validate and Return
+        result = VisualAnalysisResult(**llm_resp)
+        return result
 
-    # Validate into pydantic model - your VisualAnalysisResult should be defined by you
-    result = VisualAnalysisResult(**llm_resp)  # <-- you will replace stub model with real one
+    finally:
+        # Cleanup collage file
+        if cleanup_collage and collage_path and os.path.exists(collage_path):
+            try:
+                os.remove(collage_path)
+            except Exception:
+                pass
 
-    # Optionally cleanup collage file
-    if cleanup_collage:
-        try:
-            os.remove(collage_path)
-        except Exception:
-            pass
-
-    return result
-
-# ----------------------------
-# CLI for quick testing
-# ----------------------------
+# ---------------------------------------------------------
+# CLI Testing
+# ---------------------------------------------------------
 if __name__ == "__main__":
     import sys
     if len(sys.argv) < 2:
@@ -399,26 +361,14 @@ if __name__ == "__main__":
         sys.exit(1)
 
     video_path = sys.argv[1]
-    question = sys.argv[2] if len(sys.argv) >= 3 else None
+    question_text = sys.argv[2] if len(sys.argv) >= 3 else "Unknown Question"
 
     try:
-        collage_path = build_visual_collage(video_path, num_frames=8)
-        print(f"Collage written to: {collage_path}")
-
-        # Try to call LLM only if implemented
-        try:
-            prompt = VISUAL_ANALYSIS_PROMPT
-            if question:
-                prompt = (prompt + "\n\nQUESTION: {q}\n").format(q=question)
-            llm_out = call_llm_with_image(collage_path, prompt)
-            print("LLM response (raw):")
-            print(llm_out)
-            # If you want to validate with the filled pydantic model, do:
-            # result = VisualAnalysisResult(**llm_out)
-            # print(result.json(indent=2))
-        except NotImplementedError:
-            print("call_llm_with_image is not implemented - collage created but LLM call is stubbed.")
+        print(f"Analyzing video: {video_path}")
+        result = analyze_visual(video_path, question=question_text, cleanup_collage=False)
+        print("\n--- Visual Analysis Result ---")
+        print(result.json(indent=2))
     except Exception as e:
-        logger.exception("Error running visual analysis: %s", e)
+        logger.exception("Error running visual analysis")
         print("Error:", e)
         sys.exit(2)
