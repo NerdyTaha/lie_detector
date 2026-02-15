@@ -19,7 +19,7 @@ import tempfile
 import typing as t
 from enum import Enum
 from pydantic import BaseModel, Field, ValidationError
-from moviepy import VideoFileClip
+from moviepy.editor import VideoFileClip
 import logging
 import whisper
 import google.generativeai as genai

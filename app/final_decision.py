@@ -42,9 +42,7 @@ class FinalVerdict(BaseModel):
     
     confidence_score: int = Field(
         ...,
-        description="Confidence level in the verdict from 0 to 100.",
-        ge=0,
-        le=100
+        description="Confidence level in the verdict from 0 to 100."
     )
     
     synthesis_reasoning: str = Field(

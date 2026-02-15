@@ -22,7 +22,7 @@ import logging
 from enum import Enum
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field, ValidationError
-from moviepy import VideoFileClip, concatenate_audioclips
+from moviepy.editor import VideoFileClip, concatenate_audioclips
 import google.generativeai as genai
 
 load_dotenv()
