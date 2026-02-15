@@ -177,12 +177,10 @@ def extract_audio_from_video(video_input: t.Union[str, t.IO], out_audio_ext: str
         os.close(tmp_audio_fd)
         
         # Write the final (possibly spliced) audio
-        final_audio.write_audiofile(tmp_audio_path, verbose=False, logger=None)
+        final_audio.write_audiofile(tmp_audio_path)
         
         # Cleanup moviepy resources
-        clip.reader.close()
-        if clip.audio:
-            clip.audio.reader.close_proc()
+        clip.close()
             
         return tmp_audio_path
 

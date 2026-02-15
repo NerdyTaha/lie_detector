@@ -151,9 +151,8 @@ def extract_audio_from_video(video_input: t.Union[str, t.IO], out_audio_ext: str
         tmp_audio_fd, tmp_audio_path = tempfile.mkstemp(suffix=out_audio_ext)
         os.close(tmp_audio_fd)
         # write_audiofile will call ffmpeg under the hood
-        clip.audio.write_audiofile(tmp_audio_path, verbose=False, logger=None)
-        clip.reader.close()
-        clip.audio.reader.close_proc()
+        clip.audio.write_audiofile(tmp_audio_path)
+        clip.close()
         return tmp_audio_path
     except Exception as e:
         logger.exception("Failed to extract audio: %s", e)

@@ -1,6 +1,10 @@
 streamlit
 fastapi
-openai-whisper 
-openai
+pydantic
+moviepy==1.0.3
+openai-whisper
 google-generativeai
 opencv-python
+numpy
+pillow
+python-dotenv
