@@ -22,7 +22,7 @@ import logging
 from enum import Enum
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field, ValidationError
-from moviepy import VideoFileClip
+from moviepy import VideoFileClip, concatenate_audioclips
 import google.generativeai as genai
 
 load_dotenv()
@@ -52,6 +52,12 @@ AUDIO_ANALYSIS_PROMPT = """You are an expert in forensic audio analysis and voca
 
 YOUR TASK:
 Analyze the provided audio for vocal and paralinguistic indicators of deception or truthfulness.
+
+*** IMPORTANT AUDIO FORMAT NOTICE ***
+The attached audio file is a COMPOSITE. It consists of the FIRST 10 seconds and LAST 10 seconds of the subject's response joined together.
+- If the clip is under 20 seconds, it is the full continuous audio.
+- If you hear a sudden "jump," cut, or change in background noise in the middle, this is a technical artifact of the splicing. DO NOT interpret this jump as a sign of deception or editing by the user.
+- Focus your analysis on the vocal characteristics (trembling, pitch, speed, hesitation) WITHIN the segments provided.
 
 ANALYZE FOR THESE AUDIO-BASED DECEPTION INDICATORS:
 
@@ -109,16 +115,6 @@ ANALYZE FOR THESE AUDIO-BASED DECEPTION INDICATORS:
    - Shallow breathing affecting speech flow
    - Breath-holding before answering
 
-CRITICAL CONTEXT TO CONSIDER:
-✓ NORMAL vs. DECEPTIVE patterns:
-  - Occasional pauses for thought = NORMAL
-  - Strategic pauses before specific facts = SUSPICIOUS
-  - Consistent filler use throughout = NORMAL SPEECH PATTERN
-  - Sudden increase in fillers at key moments = DECEPTIVE MARKER
-
-✓ Look for CLUSTERS of indicators, not isolated instances
-✓ Context matters: high-stakes questions naturally increase nervousness
-
 DECISION FRAMEWORK:
 - POSITIVE (Lie Detected): Multiple clear indicators clustered around key claims, significant departure from natural speech patterns
 - NEGATIVE (No Lie Detected): Natural speech flow with normal variation, or indicators explainable by nervousness/personality
@@ -143,7 +139,11 @@ def _save_filelike_to_tempfile(filelike, suffix=""):
 
 def extract_audio_from_video(video_input: t.Union[str, t.IO], out_audio_ext: str = ".mp3") -> str:
     """
-    Accepts a video path or file-like object. Returns path to audio file (mp3).
+    Accepts a video path or file-like object. 
+    Returns path to audio file (mp3).
+    Logic:
+      - If video < 20s: Extract full audio.
+      - If video >= 20s: Extract first 10s + last 10s combined.
     """
     needs_cleanup = []
     try:
@@ -158,17 +158,28 @@ def extract_audio_from_video(video_input: t.Union[str, t.IO], out_audio_ext: str
             needs_cleanup.append(video_path)
 
         logger.info("Loading video for audio extraction: %s", video_path)
-        # Using moviepy to extract audio
+        
         clip = VideoFileClip(video_path)
         
-        # Create temp audio file
+        # --- NEW LOGIC START ---
+        if clip.duration and clip.duration > 20.0:
+            logger.info(f"Video is {clip.duration:.2f}s. Splicing first 10s and last 10s.")
+            # Subclip audio directly
+            part1 = clip.audio.subclip(0, 10)
+            part2 = clip.audio.subclip(clip.duration - 10, clip.duration)
+            final_audio = concatenate_audioclips([part1, part2])
+        else:
+            logger.info("Video is under 20s. Using full audio.")
+            final_audio = clip.audio
+        # --- NEW LOGIC END ---
+
         tmp_audio_fd, tmp_audio_path = tempfile.mkstemp(suffix=out_audio_ext)
         os.close(tmp_audio_fd)
         
-        # Write audio (verbose=False to reduce noise)
-        clip.audio.write_audiofile(tmp_audio_path, verbose=False, logger=None)
+        # Write the final (possibly spliced) audio
+        final_audio.write_audiofile(tmp_audio_path, verbose=False, logger=None)
         
-        # Clean up moviepy resources
+        # Cleanup moviepy resources
         clip.reader.close()
         if clip.audio:
             clip.audio.reader.close_proc()
@@ -179,7 +190,6 @@ def extract_audio_from_video(video_input: t.Union[str, t.IO], out_audio_ext: str
         logger.exception("Failed to extract audio: %s", e)
         raise
     finally:
-        # Cleanup temporary video file if we created one
         for p in needs_cleanup:
             try:
                 os.remove(p)
