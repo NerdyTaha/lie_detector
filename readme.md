@@ -22,7 +22,7 @@ app.py contains streamlit ui. It's connected to backend engine.
     - Positive if a possible lie detected. Negative if text does is likely not a lie.
     - Also, a reason for the signal. 
 ##### Audio_analyse module 
-    - This will take the audio and extract audio from it. 
+    - This will take the video and extract audio from it. 
     - The audio (with context of its extraction) will be sent to an LLM for processing. 
     - The LLM will be asked to look for patterns that are common in "lying" like stuttering and many filler words or pausing too much.
     - The LLM will then output a signal and reason for that signal. 

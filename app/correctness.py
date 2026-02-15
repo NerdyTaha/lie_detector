@@ -20,9 +20,7 @@ import typing as t
 from enum import Enum
 from pydantic import BaseModel, Field, ValidationError
 from moviepy import VideoFileClip
-import openai  # official Python client (older/newer variants compatible with client.audio.transcriptions.create pattern)
 import logging
-import re
 import whisper
 import google.generativeai as genai
 
@@ -198,66 +196,47 @@ def transcribe_with_openai_whisper(audio_path: str, model_size: str = "base") ->
         raise
 
 
-def _call_llm_and_get_json(question: str, transcript: str, openai_model: str = "gpt-4o-mini") -> dict:
+def _call_llm_and_get_json(question: str, transcript: str, model_name: str = "gemini-2.5-flash") -> dict:
     """
-    Call an LLM (OpenAI chat endpoint) with the system prompt and get back JSON.
-    This function assumes OPENAI_API_KEY is set. It asks the model to return strict JSON matching the schema.
+    Call Gemini 2.5 Flash to analyze the transcript. 
+    Uses native structured output (JSON mode) with the Pydantic schema.
     """
-    api_key = os.getenv("OPENAI_API_KEY")
+    api_key = os.getenv("GEMINI_API_KEY")
     if not api_key:
-        raise RuntimeError("OPENAI_API_KEY not set in environment.")
+        raise RuntimeError("GEMINI_API_KEY not set in environment.")
 
-    openai.api_key = api_key
+    genai.configure(api_key=api_key)
 
-    system_prompt = CORRECTNESS_ANALYSIS_PROMPT.format(question=question, transcribed_text=transcript)
+    # Configure the model to enforce the Pydantic schema structure
+    # We pass the schema class directly to response_schema
+    generation_config = {
+        "temperature": 0.0,
+        "response_mime_type": "application/json",
+        "response_schema": CorrectnessAnalysis
+    }
 
-    # We instruct the model to return JSON only, matching our pydantic model:
-    user_message = (
-        "Return only JSON matching this shape: "
-        '{"signal":"positive"|"negative","reasoning":"string"}\n\n'
-        "Do not add commentary outside JSON. Keep reasoning concise."
+    model = genai.GenerativeModel(
+        model_name=model_name,
+        generation_config=generation_config
     )
 
-    # We'll use ChatCompletion if available
-    try:
-        resp = openai.ChatCompletion.create(
-            model=openai_model,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_message},
-            ],
-            max_tokens=800,
-            temperature=0.0,
-        )
-        # different client versions have different shapes
-        choices = resp.get("choices") if isinstance(resp, dict) else None
-        if choices:
-            content = choices[0]["message"]["content"]
-        else:
-            # try attribute access
-            content = getattr(resp, "choices")[0].message["content"]
-    except Exception as e:
-        logger.exception("ChatCompletion call failed: %s", e)
-        raise
+    # Format the existing global prompt template with the specific inputs
+    final_prompt = CORRECTNESS_ANALYSIS_PROMPT.format(
+        question=question, 
+        transcribed_text=transcript
+    )
 
-    # Extract JSON blob from model output (strip anything outside braces)
-    json_text = None
-    # First try direct parse
     try:
-        json_text = content.strip()
-        parsed = json.loads(json_text)
-        return parsed
-    except Exception:
-        # heuristic: find first {...} block
-        m = re.search(r"\{(?:[^{}]|(?R))*\}", content, flags=re.DOTALL)
-        if m:
-            try:
-                parsed = json.loads(m.group(0))
-                return parsed
-            except Exception:
-                logger.exception("Failed to parse JSON found in model output: %s", m.group(0))
-        # If all fails, raise with model output for debugging
-        raise ValueError(f"Could not parse JSON from model output. Raw output:\n{content}")
+        # Generate content
+        response = model.generate_content(final_prompt)
+        
+        # Gemini handles the JSON serialization automatically via response_schema
+        # We just need to parse the text back into a dict
+        return json.loads(response.text)
+
+    except Exception as e:
+        logger.exception("Gemini API call failed: %s", e)
+        raise
 
 # ---------- Main exported function ----------
 def analyze_correctness(video_input: t.Union[str, t.IO], question: str, cleanup_audio: bool = True) -> CorrectnessAnalysis:
