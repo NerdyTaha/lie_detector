@@ -35,6 +35,10 @@ load_dotenv()
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+ASSETS_DIR = os.path.join(PROJECT_ROOT, "assets")
+os.makedirs(ASSETS_DIR, exist_ok=True)
+
 # ---------------------------------------------------------
 # 1) System Prompt
 # ---------------------------------------------------------
@@ -189,6 +193,15 @@ def _save_filelike_to_tempfile(filelike, suffix=""):
         f.write(filelike.read())
     return tmp_path
 
+def _to_send_collage_path(suffix: str = ".jpg") -> str:
+    ext = suffix if suffix.startswith(".") else f".{suffix}"
+    return os.path.join(ASSETS_DIR, f"to_send_collage{ext}")
+
+def _is_persistent_collage_asset(path: str) -> bool:
+    abs_path = os.path.abspath(path)
+    assets_path = os.path.abspath(ASSETS_DIR)
+    return abs_path.startswith(assets_path + os.sep) and os.path.basename(abs_path).startswith("to_send_collage")
+
 def extract_evenly_spaced_frames(video_path: str, num_frames: int = 8) -> t.List[np.ndarray]:
     """
     Extract `num_frames` evenly spaced frames from video using OpenCV.
@@ -274,13 +287,12 @@ def make_collage(frames: t.List[np.ndarray], thumb_size: t.Tuple[int, int] = (32
     return canvas
 
 def save_image_bgr_to_tempfile(img_bgr: np.ndarray, suffix=".jpg", jpeg_quality: int = 85) -> str:
-    fd, tmp_path = tempfile.mkstemp(suffix=suffix)
-    os.close(fd)
+    output_path = _to_send_collage_path(suffix=suffix)
     encode_params = [int(cv2.IMWRITE_JPEG_QUALITY), jpeg_quality]
-    success = cv2.imwrite(tmp_path, img_bgr, encode_params)
+    success = cv2.imwrite(output_path, img_bgr, encode_params)
     if not success:
         raise RuntimeError("Failed to write collage image to disk.")
-    return tmp_path
+    return output_path
 
 # ---------------------------------------------------------
 # 5) Main Exported Function
@@ -345,7 +357,12 @@ def analyze_visual(video_input: t.Union[str, t.IO],
 
     finally:
         # Cleanup collage file
-        if cleanup_collage and collage_path and os.path.exists(collage_path):
+        if (
+            cleanup_collage
+            and collage_path
+            and os.path.exists(collage_path)
+            and not _is_persistent_collage_asset(collage_path)
+        ):
             try:
                 os.remove(collage_path)
             except Exception:

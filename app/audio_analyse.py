@@ -30,6 +30,10 @@ load_dotenv()
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+ASSETS_DIR = os.path.join(PROJECT_ROOT, "assets")
+os.makedirs(ASSETS_DIR, exist_ok=True)
+
 # ---------- Pydantic model ----------
 class DeceptionSignal(str, Enum):
     LIE_DETECTED = "positive"
@@ -137,6 +141,15 @@ def _save_filelike_to_tempfile(filelike, suffix=""):
         f.write(filelike.read())
     return tmp_path
 
+def _to_send_audio_path(out_audio_ext: str = ".mp3") -> str:
+    ext = out_audio_ext if out_audio_ext.startswith(".") else f".{out_audio_ext}"
+    return os.path.join(ASSETS_DIR, f"to_send_audio{ext}")
+
+def _is_persistent_audio_asset(path: str) -> bool:
+    abs_path = os.path.abspath(path)
+    assets_path = os.path.abspath(ASSETS_DIR)
+    return abs_path.startswith(assets_path + os.sep) and os.path.basename(abs_path).startswith("to_send_audio")
+
 def extract_audio_from_video(video_input: t.Union[str, t.IO], out_audio_ext: str = ".mp3") -> str:
     """
     Accepts a video path or file-like object. 
@@ -173,16 +186,15 @@ def extract_audio_from_video(video_input: t.Union[str, t.IO], out_audio_ext: str
             final_audio = clip.audio
         # --- NEW LOGIC END ---
 
-        tmp_audio_fd, tmp_audio_path = tempfile.mkstemp(suffix=out_audio_ext)
-        os.close(tmp_audio_fd)
+        output_audio_path = _to_send_audio_path(out_audio_ext)
         
         # Write the final (possibly spliced) audio
-        final_audio.write_audiofile(tmp_audio_path)
+        final_audio.write_audiofile(output_audio_path)
         
         # Cleanup moviepy resources
         clip.close()
             
-        return tmp_audio_path
+        return output_audio_path
 
     except Exception as e:
         logger.exception("Failed to extract audio: %s", e)
@@ -281,7 +293,11 @@ def analyze_audio_features(video_input: t.Union[str, t.IO], question: str) -> Au
 
     finally:
         # Cleanup local audio file
-        if audio_path and os.path.exists(audio_path):
+        if (
+            audio_path
+            and os.path.exists(audio_path)
+            and not _is_persistent_audio_asset(audio_path)
+        ):
             try:
                 os.remove(audio_path)
             except Exception:
